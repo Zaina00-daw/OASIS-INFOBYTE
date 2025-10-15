@@ -1,0 +1,208 @@
+import warnings
+warnings.filterwarnings('ignore')
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt 
+import seaborn as sns
+
+# ------------------ LOAD DATA ------------------
+filepath = r'/Users/zaina/OneDrive/Desktop/hackathon dataset/datasets/Housing.csv'
+housing = pd.read_csv(filepath)
+print(housing.head())
+print(housing.shape)
+housing.info()
+housing.describe()
+
+# ------------------ MISSING VALUES ------------------
+print(housing.isnull().sum() * 100 / housing.shape[0])
+# ------------------ BOXPLOTS ------------------
+fig, axs = plt.subplots(2, 3, figsize=(10, 5))
+sns.boxplot(x=housing['price'], ax=axs[0,0])
+sns.boxplot(x=housing['area'], ax=axs[0,1])
+sns.boxplot(x=housing['bedrooms'], ax=axs[0,2])
+sns.boxplot(x=housing['bathrooms'], ax=axs[1,0])
+sns.boxplot(x=housing['stories'], ax=axs[1,1])
+sns.boxplot(x=housing['parking'], ax=axs[1,2])
+plt.tight_layout()
+plt.show()
+# ------------------ OUTLIER REMOVAL ------------------
+for col in ['price', 'area']:
+    Q1 = housing[col].quantile(0.25)
+    Q3 = housing[col].quantile(0.75)
+    IQR = Q3 - Q1
+    housing = housing[(housing[col] >= Q1 - 1.5*IQR) & (housing[col] <= Q3 + 1.5*IQR)]
+# ------------------ POST-OUTLIER BOXPLOTS ------------------
+fig, axs = plt.subplots(2,3, figsize = (10,5))
+sns.boxplot(x=housing['price'], ax=axs[0,0])
+sns.boxplot(x=housing['area'], ax=axs[0,1])
+sns.boxplot(x=housing['bedrooms'], ax=axs[0,2])
+sns.boxplot(x=housing['bathrooms'], ax=axs[1,0])
+sns.boxplot(x=housing['stories'], ax=axs[1,1])
+sns.boxplot(x=housing['parking'], ax=axs[1,2])
+plt.tight_layout()
+plt.show()
+# ------------------ PAIRPLOT ------------------
+sns.pairplot(housing)
+plt.show()
+# ------------------ CATEGORICAL BOXPLOTS ------------------
+plt.figure(figsize=(20, 12))
+features = ['mainroad', 'guestroom', 'basement', 'hotwaterheating', 'airconditioning', 'furnishingstatus']
+for i, feature in enumerate(features, 1):
+    plt.subplot(2, 3, i)
+    sns.boxplot(x=feature, y='price', data=housing)
+plt.show()
+# ------------------ MULTI-VARIABLE BOXPLOT ------------------
+plt.figure(figsize=(10, 5))
+sns.boxplot(x='furnishingstatus', y='price', hue='airconditioning', data=housing)
+plt.show()
+# Convert binary yes/no columns to 1/0
+varlist = ['mainroad', 'guestroom', 'basement', 'hotwaterheating', 'airconditioning', 'prefarea']
+
+for col in varlist:
+    if housing[col].dtype == 'object':
+        housing[col] = housing[col].str.lower().map({'yes': 1, 'no': 0})
+
+# Only encode furnishingstatus if it exists
+if 'furnishingstatus' in housing.columns:
+    status = pd.get_dummies(housing['furnishingstatus'], drop_first=True)
+    housing = pd.concat([housing, status], axis=1)
+    housing.drop('furnishingstatus', axis=1, inplace=True)
+else:
+    print("furnishingstatus column not found - skipping")
+# ------------------ TRAIN TEST SPLIT ------------------
+from sklearn.model_selection import train_test_split
+df_train, df_test = train_test_split(housing, train_size=0.7, test_size=0.3, random_state=100)
+# ------------------ SCALING ------------------
+from sklearn.preprocessing import MinMaxScaler
+scaler = MinMaxScaler()
+num_vars = ['area', 'bedrooms', 'bathrooms', 'stories', 'parking', 'price']
+df_train[num_vars] = scaler.fit_transform(df_train[num_vars])
+df_test[num_vars] = scaler.transform(df_test[num_vars])
+# ------------------ CORRELATION ------------------
+plt.figure(figsize=(16, 10))
+sns.heatmap(df_train.corr(), annot=True, cmap="YlGnBu")
+plt.show()
+#-----------------ENCODING------------
+from sklearn.feature_selection import RFE
+from sklearn.linear_model import LinearRegression
+import statsmodels.api as sm
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# Make a fresh copy
+X_train = housing.drop('price', axis=1).copy()
+y_train = housing['price'].copy()
+
+# Convert yes/no columns - handles both strings and ints
+varlist = ['mainroad', 'guestroom', 'basement', 'hotwaterheating', 'airconditioning', 'prefarea']
+for col in varlist:
+    if X_train[col].dtype == 'object':
+        X_train[col] = X_train[col].map({'yes': 1, 'no': 0})
+
+# One-hot encode furnishingstatus
+if 'furnishingstatus' in X_train.columns:
+    status = pd.get_dummies(X_train['furnishingstatus'], drop_first=True, dtype=int)
+    X_train = pd.concat([X_train, status], axis=1)
+    X_train.drop('furnishingstatus', axis=1, inplace=True)
+
+# Convert everything to float
+X_train = X_train.astype(float)
+
+# RFE: select top 6 features
+lm = LinearRegression()
+rfe = RFE(estimator=lm, n_features_to_select=6)
+rfe.fit(X_train, y_train)
+
+# Get selected features
+selected_features = X_train.columns[rfe.support_]
+print("Selected features:", selected_features.tolist())
+
+# Prepare data for OLS
+X_train_rfe = X_train[selected_features]
+X_train_rfe = sm.add_constant(X_train_rfe)
+
+# Fit OLS model
+lm_sm = sm.OLS(y_train, X_train_rfe).fit()
+print(lm_sm.summary())
+
+# ------------------ VIF ------------------
+vif = pd.DataFrame()
+vif["Features"] = X_train_rfe.columns
+vif["VIF"] = [variance_inflation_factor(X_train_rfe.values, i) for i in range(X_train_rfe.shape[1])]
+vif = vif.sort_values(by="VIF", ascending=False)
+print("\n", vif)
+# ------------------ RESIDUAL ANALYSIS ------------------
+y_train_price = lm_sm.predict(X_train_rfe)
+res = y_train - y_train_price
+
+# Histogram of residuals
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+sns.histplot(res, bins=20, kde=True)
+plt.title('Error Terms')
+plt.xlabel('Errors')
+
+# Residuals vs Actual
+plt.subplot(1, 2, 2)
+plt.scatter(y_train, res)
+plt.axhline(y=0, color='r', linestyle='--')
+plt.title('Residuals vs Actual')
+plt.xlabel('Actual Price')
+plt.ylabel('Residuals')
+plt.tight_layout()
+plt.show()
+# ------------------ TEST EVALUATION ------------------
+from sklearn.metrics import r2_score
+
+# Prepare test data
+X_test = df_test.copy()
+
+# Apply same preprocessing as training data
+varlist = ['mainroad', 'guestroom', 'basement', 'hotwaterheating', 'airconditioning', 'prefarea']
+for col in varlist:
+    if col in X_test.columns and X_test[col].dtype == 'object':
+        X_test[col] = X_test[col].map({'yes': 1, 'no': 0})
+
+# One-hot encode furnishingstatus
+if 'furnishingstatus' in X_test.columns:
+    status = pd.get_dummies(X_test['furnishingstatus'], drop_first=True, dtype=int)
+    X_test = pd.concat([X_test, status], axis=1)
+    X_test.drop('furnishingstatus', axis=1, inplace=True)
+
+# Convert to float and fill any NaN with 0
+X_test = X_test.astype(float).fillna(0)
+
+# Debug: Check what columns we have
+print("Training features:", selected_features.tolist())
+print("Test columns:", X_test.columns.tolist())
+
+# Select only training features, reindex to handle missing columns
+X_test_rfe = X_test.reindex(columns=selected_features, fill_value=0)
+
+# Add constant
+X_test_rfe = sm.add_constant(X_test_rfe, has_constant='add')
+
+# Predict
+y_pred = lm_sm.predict(X_test_rfe)
+
+# Convert to numpy arrays for easier handling
+y_pred = np.array(y_pred)
+y_test_array = np.array(y_test)
+
+# Check for issues
+print(f"\nPredictions shape: {y_pred.shape}")
+print(f"y_test shape: {y_test_array.shape}")
+print(f"NaN in predictions: {np.isnan(y_pred).sum()}")
+
+# Evaluate
+print("\nR² Score:", r2_score(y_test_array, y_pred))
+
+# Plot
+plt.figure(figsize=(8, 6))
+plt.scatter(y_test_array, y_pred, alpha=0.6)
+plt.plot([y_test_array.min(), y_test_array.max()], [y_test_array.min(), y_test_array.max()], 'r--', lw=2)
+plt.title('Actual vs Predicted Prices')
+plt.xlabel('Actual Price')
+plt.ylabel('Predicted Price')
+plt.show()
+# ------------------ MODEL EQUATION ------------------
+# price = 0.35*area + 0.20*bathrooms + 0.19*stories + 0.10*airconditioning + 0.10*parking + 0.11*prefarea
